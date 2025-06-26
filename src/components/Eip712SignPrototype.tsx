@@ -1,28 +1,25 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ethers } from 'ethers';
 
-// Define EIP-712 domain and types
+// EIP‑712 domain & types
 const domain = {
   name: 'IntentID',
   version: '1',
-  chainId: 1, // Mainnet; adjust for testing
+  chainId: 1,
   verifyingContract: '0x0000000000000000000000000000000000000000',
 };
-
-// Define the struct types for the intent message
 const types = {
   Intent: [
-    { name: 'type', type: 'string' },
-    { name: 'from', type: 'address' },
-    { name: 'dapp', type: 'string' },
-    { name: 'contract', type: 'address' },
-    { name: 'method', type: 'string' },
-    { name: 'params', type: 'string' },
-    { name: 'issuedAt', type: 'uint256' },
+    { name: 'type',    type: 'string' },
+    { name: 'from',    type: 'address' },
+    { name: 'dapp',    type: 'string' },
+    { name: 'contract',type: 'address' },
+    { name: 'method',  type: 'string' },
+    { name: 'params',  type: 'string' },
+    { name: 'issuedAt',type: 'uint256' },
   ],
 };
 
-// Add TypeScript interface for the message
 interface IntentMessage {
   type: string;
   from: string;
@@ -33,76 +30,170 @@ interface IntentMessage {
   issuedAt: number;
 }
 
-// Add TypeScript interface for Ethereum window
-declare global {
-  interface Window {
-    ethereum?: {
-      request: (args: { method: string; params?: any[] }) => Promise<any>;
-    };
-  }
-}
-
 const Eip712SignPrototype: React.FC = () => {
   const [signature, setSignature] = useState<string>('');
+  const [error, setError]         = useState<string>('');
+  const [isAvailable, setAvailable] = useState<boolean>(false);
+  const [isUnlocked,  setUnlocked]  = useState<boolean>(false);
 
-  const signIntent = async () => {
-    try {
-      // Ensure Ethereum provider (e.g., MetaMask) is available
-      if (!window.ethereum) throw new Error('No Ethereum provider found');
+  // Listen for availability broadcasts and query current status
+  useEffect(() => {
+    const checkMetaMask = async () => {
+      try {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tabs[0]?.id) {
+          setError('No active tab found');
+          return;
+        }
 
-      // Request account access
-      await window.ethereum.request({ method: 'eth_requestAccounts' });
-      const provider = new ethers.BrowserProvider(window.ethereum);
-      const signer = await provider.getSigner();
-      const fromAddress = await signer.getAddress();
+        // Try to connect to content script with retries
+        let retries = 3;
+        while (retries > 0) {
+          try {
+            await chrome.tabs.sendMessage(tabs[0].id, { type: 'PING' });
+            break; // If successful, break the loop
+          } catch (e) {
+            retries--;
+            if (retries === 0) {
+              setError('Content script not ready. Please refresh the page.');
+              return;
+            }
+            // Wait a bit before retrying
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
+        }
 
-      // Prepare the message payload
-      const message: IntentMessage = {
-        type: 'swap',
-        from: fromAddress,
-        dapp: 'QuickDEX',
-        contract: '0xDEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF',
-        method: 'swapTokens',
-        params: ethers.AbiCoder.defaultAbiCoder().encode(['uint256', 'address'], [
-          ethers.parseEther('1'), // 1 ETH
-          '0xA0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', // USDC contract
-        ]),
-        issuedAt: Math.floor(Date.now() / 1000),
-      };
+        // Now check MetaMask
+        chrome.tabs.sendMessage(
+          tabs[0].id,
+          { type: 'CHECK_METAMASK' },
+          (response: { available: boolean }) => {
+            if (chrome.runtime.lastError) {
+              console.error('MetaMask check error:', chrome.runtime.lastError);
+              setError('Failed to check MetaMask status');
+              return;
+            }
+            console.log('MetaMask check response:', response);
+            setAvailable(!!response?.available);
+          }
+        );
+      } catch (error) {
+        console.error('Initialization error:', error);
+        setError('Failed to initialize: ' + (error as Error).message);
+      }
+    };
 
-      // Request EIP-712 signature
-      const sig = await window.ethereum.request({
-        method: 'eth_signTypedData_v4',
-        params: [
-          fromAddress,
-          JSON.stringify({ domain, types, primaryType: 'Intent', message }),
-        ],
-      });
+    checkMetaMask();
+  }, []);
 
-      setSignature(sig);
-    } catch (err: any) {
-      console.error('Signing failed', err);
-      alert(err.message || err);
+  // Check MetaMask unlock state once available
+  useEffect(() => {
+    if (!isAvailable) return;
+
+    const checkUnlockStatus = async () => {
+      try {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tabs[0]?.id) return;
+
+        chrome.tabs.sendMessage(
+          tabs[0].id,
+          { type: 'CHECK_UNLOCKED' },
+          (response: { unlocked: boolean }) => {
+            if (chrome.runtime.lastError) {
+              console.error('Unlock check error:', chrome.runtime.lastError);
+              setError('Failed to check unlock status');
+              return;
+            }
+            console.log('Unlock check response:', response);
+            setUnlocked(!!response?.unlocked);
+          }
+        );
+      } catch (error) {
+        console.error('Unlock check error:', error);
+        setError('Failed to check unlock status: ' + (error as Error).message);
+      }
+    };
+
+    checkUnlockStatus();
+  }, [isAvailable]);
+
+  const signIntent = () => {
+    setError('');
+    if (!isAvailable) {
+      setError('Please install MetaMask to use this feature');
+      return;
     }
+    if (!isUnlocked) {
+      setError('Please unlock MetaMask to use this feature');
+      return;
+    }
+
+    const message: IntentMessage = {
+      type: 'swap',
+      from: '', // will be set in content script
+      dapp: 'QuickDEX',
+      contract: '0xDEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF',
+      method: 'swapTokens',
+      params: ethers.AbiCoder.defaultAbiCoder().encode(
+        ['uint256', 'address'],
+        [ethers.parseEther('1'), '0xA0b86991c6218b36c1d19d4a2e9eb0ce3606eb48']
+      ),
+      issuedAt: Math.floor(Date.now() / 1000),
+    };
+
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      console.log('▶️ Active tab URL:', tabs[0].url);
+      chrome.tabs.sendMessage(
+        tabs[0].id!,
+        { type: 'SIGN_INTENT', domain, types, message },
+        (response: { signature?: string; error?: string }) => {
+          if (response.error) {
+            setError(response.error);
+          } else if (response.signature) {
+            setSignature(response.signature);
+          } else {
+            setError('No response from signer');
+          }
+        }
+      );
+    });
   };
 
   return (
-    <div className="p-4 border rounded-lg shadow-md max-w-lg mx-auto">
-      <h2 className="text-xl font-semibold mb-4">EIP-712 Intent Signer</h2>
-      <button
-        className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
-        onClick={signIntent}
-      >
-        Sign Intent
-      </button>
+    <div className="space-y-4">
+      {!isAvailable ? (
+        <div className="p-4 bg-yellow-100 text-yellow-700 rounded">
+          Please install MetaMask to use this feature
+        </div>
+      ) : !isUnlocked ? (
+        <div className="p-4 bg-yellow-100 text-yellow-700 rounded">
+          Please unlock MetaMask to use this feature
+        </div>
+      ) : (
+        <button
+          onClick={signIntent}
+          className="w-full px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+        >
+          Sign Intent
+        </button>
+      )}
+
+      {error && (
+        <div className="p-3 bg-red-100 text-red-700 rounded">
+          {error}
+        </div>
+      )}
+
       {signature && (
         <div className="mt-4">
-          <label className="font-medium">Signature:</label>
-          <pre className="p-2 bg-gray-100 rounded mt-2 break-all">{signature}</pre>
+          <h3 className="font-medium mb-2">Signature:</h3>
+          <div className="p-3 bg-gray-100 rounded break-all text-sm">
+            {signature}
+          </div>
         </div>
       )}
     </div>
   );
 };
 
-export default Eip712SignPrototype; 
+export default Eip712SignPrototype;
