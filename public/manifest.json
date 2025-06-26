@@ -33,13 +33,13 @@
   {
   "matches": ["http://*/*", "https://*/*"],
   "js": ["content/index.js"],
-  "run_at": "document_idle",
+  "run_at": "document_start",
   "all_frames": true
 }
 ],
   "web_accessible_resources": [
     {
-      "resources": ["content/index.js", "inpage.js"],
+      "resources": ["inpage.js"],
       "matches": ["http://*/*", "https://*/*"]
     }
   ]

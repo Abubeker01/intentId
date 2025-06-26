@@ -5,7 +5,7 @@ console.log('🧪 INTENTID DEBUG: content/index.js loaded');
 function injectInpage() {
   const script = document.createElement('script');
   // chrome.runtime.getURL works in content scripts
-  script.src = chrome.runtime.getURL('inpage.js');
+  script.src = chrome.runtime.getURL('./inpage.js');
   script.onload = () => script.remove();
   (document.head || document.documentElement).appendChild(script);
 }
